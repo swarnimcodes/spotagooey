@@ -1,0 +1,45 @@
+[package]
+name = "spotagooey"
+version = "0.1.0"
+description = "A Tauri App"
+authors = ["you"]
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[lib]
+# The `_lib` suffix may seem redundant but it is necessary
+# to make the lib name unique and wouldn't conflict with the bin name.
+# This seems to be only an issue on Windows, see https://github.com/rust-lang/cargo/issues/8519
+name = "spotagooey_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+# librespot 0.8.x's build script is incompatible with vergen 9.1.
+vergen = { version = ">=9.0.6, <9.1", default-features = false }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+tauri-plugin-opener = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+spotify_web_api = "0.2"
+tokio = { version = "1", features = ["full"] }
+tiny_http = "0.12"
+url = "2"
+webbrowser = "1"
+dirs = "6"
+serde_yaml = "0.9"
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+scraper = "0.24"
+http = "1"
+librespot-core = { version = "=0.8.3", package = "spotatui-librespot-core" }
+librespot-connect = { version = "=0.8.3", package = "spotatui-librespot-connect" }
+librespot-oauth = { version = "=0.8.3", package = "spotatui-librespot-oauth" }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+librespot-playback = { version = "=0.8.3", package = "spotatui-librespot-playback", default-features = false, features = ["alsa-backend"] }
+
+[target.'cfg(any(target_os = "windows", target_os = "macos"))'.dependencies]
+librespot-playback = { version = "=0.8.3", package = "spotatui-librespot-playback", default-features = false, features = ["rodio-backend"] }
