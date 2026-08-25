@@ -154,6 +154,8 @@ function App() {
   const [themeId, setThemeId] = useState(() => initialTheme().id);
   const [info, setInfo] = useState<AppInfo | null>(null);
   const [user, setUser] = useState<LoginResult | null>(null);
+  const [loginPending, setLoginPending] = useState(false);
+  const loginInFlight = useRef(false);
   const [nativePlayback, setNativePlayback] = useState<NativePlaybackInfo | null>(null);
 
   const [view, setView] = useState<View>({ name: "home" });
@@ -330,6 +332,9 @@ function App() {
   }, [user, notify]);
 
   const doLogin = useCallback(async () => {
+    if (loginInFlight.current) return;
+    loginInFlight.current = true;
+    setLoginPending(true);
     try {
       const u = await login();
       setUser(u);
@@ -342,6 +347,9 @@ function App() {
       );
     } catch (e) {
       notify(String(e));
+    } finally {
+      loginInFlight.current = false;
+      setLoginPending(false);
     }
   }, [notify]);
 
@@ -759,7 +767,7 @@ function App() {
       <Sidebar user={user} nativePlayback={nativePlayback} nav={nav} view={view} onNav={setView} onLogout={doLogout} playlistCount={shelves.playlists.length} themes={themes} themeId={themeId} onTheme={changeTheme} />
       <main className="content" onClick={() => showDevices && setShowDevices(false)}>
         {!user ? (
-          <LoginScreen info={info} onLogin={doLogin} onSaveClientId={saveClientId} />
+          <LoginScreen info={info} loginPending={loginPending} onLogin={doLogin} onSaveClientId={saveClientId} />
         ) : (
           <>
             {view.name === "home" && (
@@ -1126,9 +1134,10 @@ function Sidebar(props: {
   );
 }
 
-function LoginScreen(props: {
+export function LoginScreen(props: {
   info: AppInfo | null;
-  onLogin: () => void;
+  loginPending: boolean;
+  onLogin: () => Promise<void>;
   onSaveClientId: (id: string) => Promise<void>;
 }) {
   const [editing, setEditing] = useState(false);
@@ -1137,6 +1146,7 @@ function LoginScreen(props: {
   const [error, setError] = useState<string | null>(null);
 
   const save = async () => {
+    if (saving || props.loginPending) return;
     const id = clientId.trim();
     if (!id) {
       setError("Paste your Client ID first.");
@@ -1165,7 +1175,16 @@ function LoginScreen(props: {
         <div className="login-logo">♪</div>
         <h1>Spotagooey</h1>
         <p>Your library, beautifully.</p>
-        {showSetup ? (
+        {props.loginPending ? (
+          <div className="browser-auth-card" role="status" aria-live="polite">
+            <span className="browser-auth-spinner" aria-hidden="true" />
+            <h2>Finish signing in through your browser</h2>
+            <p>We opened Spotify in your browser and are waiting for authorization.</p>
+            <p className="browser-auth-hint">
+              Don&apos;t see it? Check your other windows or browser tabs. This screen will update automatically.
+            </p>
+          </div>
+        ) : showSetup ? (
           <div className="setup-card">
             <ol className="setup-steps">
               <li>
@@ -1208,7 +1227,7 @@ function LoginScreen(props: {
           </div>
         ) : (
           <>
-            <button className="login-btn" onClick={props.onLogin}>
+            <button className="login-btn" onClick={props.onLogin} disabled={props.loginPending}>
               Continue with Spotify
             </button>
             <button className="link-btn" onClick={() => setEditing(true)}>

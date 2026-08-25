@@ -96,6 +96,7 @@ pub const REDIRECT_PORT: u16 = config::DEFAULT_REDIRECT_PORT;
 struct SpotifyState {
     client: tokio::sync::Mutex<Option<std::sync::Arc<AsyncSpotifyPKCE>>>,
     config: tokio::sync::Mutex<config::Config>,
+    login_attempt: tokio::sync::Mutex<()>,
     native: tokio::sync::Mutex<NativePlaybackState>,
     selected_device: tokio::sync::Mutex<Option<String>>,
     local_queue: tokio::sync::Mutex<local_queue::LocalQueue>,
@@ -209,20 +210,21 @@ fn parse_context_type(uri: &str) -> Result<ContextType, String> {
 
 #[tauri::command]
 async fn login(state: tauri::State<'_, SpotifyState>) -> Result<auth::LoginResult, String> {
+    let _login_attempt = state.login_attempt.try_lock().map_err(|_| {
+        "Spotify sign-in is already in progress. Finish signing in through your browser."
+            .to_string()
+    })?;
     let client_id = client_id()?;
     let redirect_uri = redirect_uri();
     let port = config::load().port;
-    let code_rx = auth::spawn_callback_server(port)?;
+    let callback_server = auth::spawn_callback_server(port)?;
 
     let mut client = auth::build_client(&client_id, &redirect_uri)?;
     let auth_url = client.user_authorization_url();
 
     webbrowser::open(&auth_url).map_err(|e| format!("failed to open browser: {e}"))?;
 
-    let callback = tokio::time::timeout(Duration::from_secs(300), code_rx)
-        .await
-        .map_err(|_| "timed out waiting for Spotify authorization (5 min)".to_string())?
-        .map_err(|_| "callback server failed".to_string())?;
+    let callback = callback_server.wait(Duration::from_secs(300)).await?;
 
     let full_url = format!("http://127.0.0.1:{port}{callback}");
     auth::complete_login(&client, &full_url).await?;
@@ -944,6 +946,7 @@ pub fn run() {
         .manage(SpotifyState {
             client: tokio::sync::Mutex::new(None),
             config: tokio::sync::Mutex::new(config::load()),
+            login_attempt: tokio::sync::Mutex::new(()),
             native: tokio::sync::Mutex::new(NativePlaybackState::default()),
             selected_device: tokio::sync::Mutex::new(None),
             local_queue: tokio::sync::Mutex::new(local_queue::LocalQueue::load()),
