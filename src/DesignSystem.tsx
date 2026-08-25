@@ -1,5 +1,6 @@
 import { useState, type CSSProperties } from "react";
 import { applyTheme, availableThemes } from "./themes";
+import { ThemedSelect } from "./components/ThemedSelect";
 import "./DesignSystem.css";
 
 const tracks = [
@@ -29,6 +30,7 @@ export default function DesignSystem() {
   const [playing, setPlaying] = useState(true);
   const [enabled, setEnabled] = useState(true);
   const [segment, setSegment] = useState("Albums");
+  const [device, setDevice] = useState("laptop");
   const [volume, setVolume] = useState(64);
   const activeTheme = themes.find((theme) => theme.id === themeId) ?? themes[0];
   const swatches = [
@@ -50,10 +52,13 @@ export default function DesignSystem() {
       <header className="ds-masthead">
         <div className="ds-wordmark"><span>♪</span> Spotagooey</div>
         <div className="ds-masthead-actions">
-          <label htmlFor="design-theme">Theme</label>
-          <select id="design-theme" value={themeId} onChange={(event) => changeTheme(event.target.value)}>
-            {themes.map((theme) => <option key={theme.id} value={theme.id}>{theme.name}</option>)}
-          </select>
+          <ThemedSelect
+            compact
+            label="Theme"
+            value={themeId}
+            options={themes.map((theme) => ({ value: theme.id, label: theme.name }))}
+            onValueChange={changeTheme}
+          />
           <div className="ds-version">Interface standard · v1</div>
         </div>
       </header>
@@ -126,8 +131,17 @@ export default function DesignSystem() {
               <h3>Fields</h3>
               <label className="ds-label">Search</label>
               <div className="ds-search"><Glyph>⌕</Glyph><input placeholder="Artists, albums, and songs" /></div>
-              <label className="ds-label">Device</label>
-              <select className="ds-select" defaultValue="Laptop"><option>Laptop</option><option>Living room</option></select>
+              <div className="ds-select-field">
+                <ThemedSelect
+                  label="Device"
+                  value={device}
+                  options={[
+                    { value: "laptop", label: "Laptop" },
+                    { value: "living-room", label: "Living room" },
+                  ]}
+                  onValueChange={setDevice}
+                />
+              </div>
             </article>
 
             <article className="ds-specimen">

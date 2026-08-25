@@ -56,6 +56,7 @@ import {
 import "./App.css";
 import { applyTheme, availableThemes, initialTheme } from "./themes";
 import { activeLyricIndex, interpolateProgress } from "./playerMath";
+import { ThemedSelect } from "./components/ThemedSelect";
 import {
   loadPlaybackCache,
   playbackCacheFromState,
@@ -1095,14 +1096,14 @@ function Sidebar(props: {
         </button>
       </nav>
       <div className="sidebar-spacer" />
-      <label className="theme-picker">
-        <span>Appearance</span>
-        <select value={props.themeId} onChange={(event) => props.onTheme(event.currentTarget.value)}>
-          {props.themes.map((theme) => (
-            <option key={theme.id} value={theme.id}>{theme.name}</option>
-          ))}
-        </select>
-      </label>
+      <div className="theme-picker">
+        <ThemedSelect
+          label="Appearance"
+          value={props.themeId}
+          options={props.themes.map((theme) => ({ value: theme.id, label: theme.name }))}
+          onValueChange={props.onTheme}
+        />
+      </div>
       {props.user && props.nativePlayback && (
         <div className={`native-status ${props.nativePlayback.state}`} title={props.nativePlayback.error ?? undefined}>
           <span className="native-status-dot" />

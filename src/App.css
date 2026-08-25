@@ -181,22 +181,6 @@ img {
   font-size: 11px;
 }
 
-.theme-picker select {
-  width: 100%;
-  padding: 7px 8px;
-  border: 1px solid var(--border);
-  border-radius: var(--radius-sm);
-  outline: none;
-  background: var(--bg-elev);
-  color: var(--text);
-  font: inherit;
-  cursor: pointer;
-}
-
-.theme-picker select:focus {
-  border-color: var(--accent);
-}
-
 .native-status {
   display: flex;
   align-items: center;

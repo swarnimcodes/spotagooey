@@ -25,7 +25,11 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: 22
-          cache: npm
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v6
+        with:
+          cache: true
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
@@ -46,11 +50,10 @@ jobs:
           set -euo pipefail
           release_version="${GITHUB_REF_NAME#v}"
           package_version="$(node --print "require('./package.json').version")"
-          lock_version="$(node --print "require('./package-lock.json').version")"
           tauri_version="$(node --print "require('./src-tauri/tauri.conf.json').version")"
           cargo_version="$(cargo metadata --locked --no-deps --format-version 1 --manifest-path src-tauri/Cargo.toml | node --input-type=module -e "let input=''; process.stdin.on('data', chunk => input += chunk); process.stdin.on('end', () => console.log(JSON.parse(input).packages.find(pkg => pkg.name === 'spotagooey').version));")"
 
-          for version in "$package_version" "$lock_version" "$tauri_version" "$cargo_version"; do
+          for version in "$package_version" "$tauri_version" "$cargo_version"; do
             if [[ "$version" != "$release_version" ]]; then
               echo "Expected version $release_version from tag $GITHUB_REF_NAME, found $version" >&2
               exit 1
@@ -58,17 +61,17 @@ jobs:
           done
 
       - name: Install frontend dependencies
-        run: npm ci
+        run: pnpm install --frozen-lockfile
 
       - name: Test frontend
-        run: npm test
+        run: pnpm test
 
       - name: Test Rust backend
         working-directory: src-tauri
         run: cargo test --locked
 
       - name: Build frontend
-        run: npm run build
+        run: pnpm run build
 
   publish:
     name: Build ${{ matrix.name }}
@@ -103,7 +106,11 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: 22
-          cache: npm
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v6
+        with:
+          cache: true
 
       - name: Install Rust target
         uses: dtolnay/rust-toolchain@stable
@@ -123,7 +130,7 @@ jobs:
             rpm
 
       - name: Install frontend dependencies
-        run: npm ci
+        run: pnpm install --frozen-lockfile
 
       - name: Build and publish release
         uses: tauri-apps/tauri-action@v1.0.0

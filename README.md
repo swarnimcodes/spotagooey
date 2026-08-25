@@ -39,6 +39,6 @@ Spotify Premium is required for playback. During setup, Spotagooey guides you th
 ## Development
 
 ```sh
-npm install
-npm run tauri dev
+pnpm install
+pnpm run tauri dev
 ```

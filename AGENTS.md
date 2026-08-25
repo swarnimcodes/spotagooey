@@ -34,6 +34,8 @@ Guiding principles:
 
 ## Commands
 
-- `npm run tauri dev` — run the app
-- `npm run tauri build` — build a distributable
+- Use pnpm exclusively for JavaScript dependencies and scripts. Do not use npm or commit `package-lock.json`.
+- `pnpm install` — install frontend dependencies
+- `pnpm run tauri dev` — run the app
+- `pnpm run tauri build` — build a distributable
 - `cargo build` in `src-tauri/` — compile Rust backend only
