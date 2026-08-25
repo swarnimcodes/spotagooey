@@ -30,6 +30,31 @@ pub struct CallbackServer {
     cancel: std::sync::mpsc::Sender<()>,
 }
 
+const AUTH_COMPLETE_HTML: &str = r#"<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Signed in to Spotagooey</title>
+    <style>
+      :root { color-scheme: dark; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+      * { box-sizing: border-box; }
+      body { margin: 0; min-height: 100vh; display: grid; place-items: center; color: #f3f0dc; background: #1d1d27; }
+      main { width: min(440px, calc(100% - 40px)); padding: 48px 40px; text-align: center; border: 1px solid rgba(126, 156, 216, .22); border-radius: 20px; background: #2a2a37; }
+      .mark { display: grid; width: 72px; height: 72px; margin: 0 auto 24px; place-items: center; border-radius: 20px; color: #1d1d27; font-size: 34px; font-weight: 800; background: #7e9cd8; }
+      h1 { margin: 0 0 10px; font-size: 30px; letter-spacing: -.5px; }
+      p { margin: 0; color: #aaa8a0; font-size: 15px; line-height: 1.6; }
+    </style>
+  </head>
+  <body>
+    <main>
+      <div class="mark" aria-hidden="true">&#10003;</div>
+      <h1>You’re signed in</h1>
+      <p>Return to Spotagooey. You can safely close this tab.</p>
+    </main>
+  </body>
+</html>"#;
+
 impl CallbackServer {
     pub async fn wait(mut self, timeout: std::time::Duration) -> Result<String, String> {
         tokio::time::timeout(timeout, &mut self.receiver)
@@ -62,21 +87,11 @@ pub fn spawn_callback_server(port: u16) -> Result<CallbackServer, String> {
         match server.recv_timeout(std::time::Duration::from_millis(200)) {
             Ok(Some(request)) => {
                 let url = request.url().to_string();
-                let response = tiny_http::Response::from_string(
-                        "<!doctype html>
-                         <html lang=\"en\">
-                         <meta charset=\"utf-8\">
-                         <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">
-                         <title>Signed in to Spotagooey</title>
-                         <body style=\"margin:0;background:#1d1d27;color:#f3f0dc;font-family:system-ui,sans-serif;display:grid;min-height:100vh;place-items:center;text-align:center\">
-                           <main style=\"padding:32px\">
-                             <div style=\"font-size:48px\">&#10003;</div>
-                             <h1>You're signed in</h1>
-                             <p style=\"color:#aaa8a0\">Return to Spotagooey. You can close this tab.</p>
-                           </main>
-                         </body>
-                         </html>",
-                    );
+                let content_type =
+                    tiny_http::Header::from_bytes(b"Content-Type", b"text/html; charset=utf-8")
+                        .expect("static content type header must be valid");
+                let response =
+                    tiny_http::Response::from_string(AUTH_COMPLETE_HTML).with_header(content_type);
                 let _ = request.respond(response);
                 let _ = tx.send(url);
                 break;

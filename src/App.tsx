@@ -763,7 +763,7 @@ function App() {
   }, []);
 
   return (
-    <div className={`app ${sidePanel && user ? "side-panel-open" : ""}`}>
+    <div className={`app ${!user ? "logged-out" : ""} ${sidePanel && user ? "side-panel-open" : ""}`}>
       <Sidebar user={user} nativePlayback={nativePlayback} nav={nav} view={view} onNav={setView} onLogout={doLogout} playlistCount={shelves.playlists.length} themes={themes} themeId={themeId} onTheme={changeTheme} />
       <main className="content" onClick={() => showDevices && setShowDevices(false)}>
         {!user ? (
@@ -1167,15 +1167,18 @@ export function LoginScreen(props: {
 
   const showSetup = !props.info?.clientIdSet || editing;
   const redirect = props.info?.redirectUri ?? "http://127.0.0.1:8431/callback";
-  const configPath = props.info?.configPath ?? "…/spotagooey/client.yml";
 
   return (
     <div className="login-screen">
-      <div className="login-hero">
-        <div className="login-logo">♪</div>
-        <h1>Spotagooey</h1>
-        <p>Your library, beautifully.</p>
-        {props.loginPending ? (
+      <div className="login-layout">
+        <section className="login-brand-panel">
+          <div className="login-logo">♪</div>
+          <h1>Spotagooey</h1>
+          <p>Your library, beautifully.</p>
+        </section>
+
+        <section className="login-action-panel">
+          {props.loginPending ? (
           <div className="browser-auth-card" role="status" aria-live="polite">
             <span className="browser-auth-spinner" aria-hidden="true" />
             <h2>Finish signing in through your browser</h2>
@@ -1184,12 +1187,20 @@ export function LoginScreen(props: {
               Don&apos;t see it? Check your other windows or browser tabs. This screen will update automatically.
             </p>
           </div>
-        ) : showSetup ? (
+          ) : showSetup ? (
           <div className="setup-card">
+            <header className="setup-card-header">
+              <span>First-time setup</span>
+              <h2>Connect Spotify</h2>
+              <p>Use your own Spotify Developer Client ID. It only takes two steps.</p>
+            </header>
             <ol className="setup-steps">
               <li>
-                <div className="setup-step-head">
-                  <span>Create a Spotify Developer app</span>
+                <span className="setup-step-number">1</span>
+                <div className="setup-step-content">
+                  <h3>Create a Spotify Developer app</h3>
+                  <p>Open the dashboard, create an app, and add this Redirect URI:</p>
+                  <code className="redirect-uri">{redirect}</code>
                   <button
                     className="ghost-btn"
                     onClick={() => openUrl("https://developer.spotify.com/dashboard")}
@@ -1197,44 +1208,43 @@ export function LoginScreen(props: {
                     Open dashboard ↗
                   </button>
                 </div>
-                <p className="setup-note">
-                  Add this as a Redirect URI in your app's settings:{" "}
-                  <code>{redirect}</code>
-                </p>
               </li>
               <li>
-                <div className="setup-step-head">
-                  <span>Paste your Client ID</span>
+                <span className="setup-step-number">2</span>
+                <div className="setup-step-content">
+                  <h3>Paste your Client ID</h3>
+                  <p>Copy it from the app&apos;s Basic Information page.</p>
+                  <input
+                    className="search-input"
+                    placeholder="Spotify Client ID"
+                    value={clientId}
+                    onChange={(e) => setClientIdInput(e.currentTarget.value)}
+                    onKeyDown={(e) => e.key === "Enter" && save()}
+                    spellCheck={false}
+                    aria-label="Spotify Client ID"
+                  />
                 </div>
-                <input
-                  className="search-input"
-                  placeholder="e.g. d420a117a32841c2b3474932e49fb54b"
-                  value={clientId}
-                  onChange={(e) => setClientIdInput(e.currentTarget.value)}
-                  onKeyDown={(e) => e.key === "Enter" && save()}
-                  spellCheck={false}
-                />
-                <p className="setup-note">
-                  Stored locally in <code>{configPath}</code> — never sent anywhere
-                  except Spotify.
-                </p>
               </li>
             </ol>
             {error && <p className="setup-error">{error}</p>}
-            <button className="login-btn" onClick={save} disabled={saving}>
-              {saving ? "Saving…" : "Save and continue"}
+            <button className="login-btn setup-submit" onClick={save} disabled={saving}>
+              {saving ? "Saving…" : "Save and open Spotify"}
             </button>
+            <p className="setup-privacy">Your Client ID stays on this device.</p>
           </div>
-        ) : (
-          <>
+          ) : (
+          <div className="returning-login-card">
+            <h2>Connect to Spotify</h2>
+            <p>Sign in through your browser to open your library.</p>
             <button className="login-btn" onClick={props.onLogin} disabled={props.loginPending}>
               Continue with Spotify
             </button>
             <button className="link-btn" onClick={() => setEditing(true)}>
               Change Client ID
             </button>
-          </>
-        )}
+          </div>
+          )}
+        </section>
       </div>
     </div>
   );
@@ -1985,11 +1995,8 @@ export function FullPlayer(props: {
 
   const hasLyrics = props.lyricsStatus === "ready" && Boolean(props.document);
   const showLyrics = lyricsOpen && hasLyrics;
-  const backgroundStyle = props.track?.image
-    ? ({ "--player-art": `url("${props.track.image.split('"').join('%22')}")` } as CSSProperties)
-    : undefined;
   return (
-    <section className={`full-player ${showLyrics ? "with-lyrics" : "without-lyrics"}`} style={backgroundStyle} role="dialog" aria-modal="true" aria-label="Now playing">
+    <section className={`full-player ${showLyrics ? "with-lyrics" : "without-lyrics"}`} role="dialog" aria-modal="true" aria-label="Now playing">
       <div className="full-player-backdrop" />
       <button className="full-close" onClick={props.onClose} title="Close full player" aria-label="Close full player" autoFocus><PlayerIcon name="close" size={24} /></button>
       <div className="full-player-content">
