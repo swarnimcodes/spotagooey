@@ -154,3 +154,60 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: gh release edit "$GITHUB_REF_NAME" --draft=false --repo "$GITHUB_REPOSITORY"
+
+  aur:
+    name: Publish spotagooey-bin to AUR
+    needs: finalize
+    runs-on: ubuntu-22.04
+
+    steps:
+      - name: Configure AUR SSH access
+        env:
+          AUR_SSH_PRIVATE_KEY: ${{ secrets.AUR_SSH_PRIVATE_KEY }}
+        run: |
+          set -euo pipefail
+          if [[ -z "$AUR_SSH_PRIVATE_KEY" ]]; then
+            echo "AUR_SSH_PRIVATE_KEY is not configured" >&2
+            exit 1
+          fi
+
+          install -d -m 700 "$HOME/.ssh"
+          printf '%s\n' "$AUR_SSH_PRIVATE_KEY" > "$HOME/.ssh/aur"
+          chmod 600 "$HOME/.ssh/aur"
+          printf '%s\n' \
+            'aur.archlinux.org ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIEuBKrPzbawxA/k2g6NcyV5jmqwJ2s+zpgZGZ7tpLIcN' \
+            > "$HOME/.ssh/known_hosts"
+          chmod 644 "$HOME/.ssh/known_hosts"
+
+      - name: Update AUR package metadata
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GIT_SSH_COMMAND: ssh -i /home/runner/.ssh/aur -o IdentitiesOnly=yes
+        run: |
+          set -euo pipefail
+          version="${GITHUB_REF_NAME#v}"
+
+          git clone ssh://aur@aur.archlinux.org/spotagooey-bin.git aur
+          gh release download "$GITHUB_REF_NAME" \
+            --repo "$GITHUB_REPOSITORY" \
+            --pattern "spotagooey_${version}_amd64.deb" \
+            --dir release-assets
+          checksum="$(sha256sum "release-assets/spotagooey_${version}_amd64.deb" | cut -d ' ' -f 1)"
+
+          sed -i "s/^pkgver=.*/pkgver=${version}/" aur/PKGBUILD
+          sed -i 's/^pkgrel=.*/pkgrel=1/' aur/PKGBUILD
+          sed -i "/^sha256sums_x86_64=(/,/^)/s/'[0-9a-f]\{64\}'/'${checksum}'/" aur/PKGBUILD
+
+          docker run --rm \
+            --volume "$PWD/aur:/pkg" \
+            archlinux:base-devel \
+            bash -lc "useradd --create-home builder && cd /pkg && runuser -u builder -- makepkg --printsrcinfo" \
+            > aur/.SRCINFO
+
+          git -C aur diff --check
+          git -C aur diff --exit-code --quiet && exit 0
+          git -C aur config user.name 'github-actions[bot]'
+          git -C aur config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git -C aur add PKGBUILD .SRCINFO
+          git -C aur commit -m "Update to ${version}"
+          git -C aur push origin master
