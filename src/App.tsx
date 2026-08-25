@@ -8,6 +8,7 @@ import {
   LoginResult,
   LyricsDocument,
   NativePlaybackInfo,
+  PlaybackQueue,
   PlaybackState,
   Playlist,
   PlaylistTrack,
@@ -28,9 +29,14 @@ import {
   pause,
   play,
   playbackState,
+  playbackQueue,
+  playNextFromQueue,
   playlistItems,
   playlists,
   resume,
+  removeFromQueue,
+  moveQueueItem,
+  clearQueue,
   savedAlbums,
   savedTracks,
   search,
@@ -77,6 +83,7 @@ interface TrackListData {
   artwork: string | null;
   tracks: Track[];
   playUri: string;
+  notice?: string;
 }
 
 interface CurrentTrack {
@@ -90,6 +97,8 @@ interface CurrentTrack {
 }
 
 type LyricsStatus = "idle" | "loading" | "ready" | "unavailable" | "error";
+type SidePanel = "lyrics" | "queue" | null;
+type QueueStatus = "idle" | "loading" | "ready" | "error";
 
 function usePlaybackClock(player: PlaybackState | null, duration: number): number {
   const [progress, setProgress] = useState(player?.progress_ms ?? 0);
@@ -163,7 +172,10 @@ function App() {
   const lastPlaybackCacheWrite = useRef({ at: 0, trackId: "", isPlaying: false });
   const [deviceList, setDeviceList] = useState<Device[]>([]);
   const [showDevices, setShowDevices] = useState(false);
-  const [showLyrics, setShowLyrics] = useState(false);
+  const [sidePanel, setSidePanel] = useState<SidePanel>(null);
+  const [queueData, setQueueData] = useState<PlaybackQueue | null>(null);
+  const [queueStatus, setQueueStatus] = useState<QueueStatus>("idle");
+  const [queueError, setQueueError] = useState<string | null>(null);
   const [showFullPlayer, setShowFullPlayer] = useState(false);
   const [showQuickSearch, setShowQuickSearch] = useState(false);
   const [lyrics, setLyrics] = useState<LyricsDocument | null>(null);
@@ -181,6 +193,31 @@ function App() {
     clearTimeout(toastTimer.current);
     toastTimer.current = setTimeout(() => setToast(null), 2500);
   }, []);
+
+  const refreshQueue = useCallback(async (silent = false) => {
+    if (!silent) setQueueStatus("loading");
+    try {
+      const next = await playbackQueue();
+      setQueueData(next ?? { items: [] });
+      setQueueStatus("ready");
+      setQueueError(null);
+    } catch (error) {
+      setQueueStatus("error");
+      setQueueError(String(error));
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!user || sidePanel !== "queue") return;
+    void refreshQueue();
+    const id = window.setInterval(() => void refreshQueue(true), 5_000);
+    return () => window.clearInterval(id);
+  }, [user, sidePanel, refreshQueue]);
+
+  useEffect(() => {
+    if (user) void refreshQueue(true);
+    else setQueueData(null);
+  }, [user, refreshQueue]);
 
   useEffect(() => {
     const onShortcut = (event: KeyboardEvent) => {
@@ -325,6 +362,14 @@ function App() {
     async (id: string) => {
       setView({ name: "playlist", id });
       const p = shelves.playlists.find((x) => x.id === id);
+      const base: TrackListData = {
+        title: p?.name ?? "Playlist",
+        subtitle: p?.owner?.display_name ?? "Playlist",
+        artwork: imageOf(p ? { images: p.images ?? [] } : null, 300),
+        tracks: [],
+        playUri: p?.uri ?? `spotify:playlist:${id}`,
+      };
+      setListData(base);
       try {
         let tracks = playlistTracks[id];
         if (!tracks) {
@@ -334,15 +379,15 @@ function App() {
             .filter((t): t is Track => "album" in t && typeof t.id === "string");
           setPlaylistTracks((m) => ({ ...m, [id]: tracks }));
         }
-        setListData({
-          title: p?.name ?? `Playlist`,
-          subtitle: p?.owner?.display_name ?? "Playlist",
-          artwork: imageOf(p ? { images: p.images ?? [] } : null, 300),
-          tracks,
-          playUri: p?.uri ?? `spotify:playlist:${id}`,
-        });
+        setListData({ ...base, tracks });
       } catch (e) {
-        notify(String(e));
+        const message = String(e);
+        if (message.includes("only allows Spotagooey")) {
+          setListData({ ...base, notice: message });
+        } else {
+          setListData({ ...base, notice: "This playlist could not be loaded right now." });
+          notify(message);
+        }
       }
     },
     [notify, playlistTracks, shelves.playlists]
@@ -480,6 +525,18 @@ function App() {
     }
   }, [player, restoredPlayback, notify]);
 
+  const playQueuedEntry = useCallback(async (id: number) => {
+    const next = await playNextFromQueue(id);
+    if (!next) return false;
+    setLyrics(null);
+    setLyricsStatus("loading");
+    await refreshQueue(true);
+    window.setTimeout(() => {
+      void playbackState().then(setPlayer).catch(() => undefined);
+    }, 250);
+    return true;
+  }, [refreshQueue]);
+
   const moveTrack = useCallback(async (direction: "next" | "previous") => {
     try {
       if (direction === "next") await skipNext();
@@ -487,10 +544,11 @@ function App() {
       setLyrics(null);
       setLyricsStatus("loading");
       setPlayer(await playbackState());
+      if (sidePanel === "queue") await refreshQueue(true);
     } catch (error) {
       notify(`Failed to skip track: ${error}`);
     }
-  }, [notify]);
+  }, [notify, sidePanel, refreshQueue]);
 
   const seekTo = useCallback(
     async (ms: number) => {
@@ -514,13 +572,42 @@ function App() {
     async (uri: string) => {
       try {
         await addToQueue(uri);
+        await refreshQueue(true);
         notify("Added to queue");
       } catch (e) {
         notify(String(e));
       }
     },
-    [notify]
+    [notify, refreshQueue]
   );
+
+  const removeQueuedTrack = useCallback(async (id: number) => {
+    try {
+      await removeFromQueue(id);
+      await refreshQueue(true);
+    } catch (error) {
+      notify(String(error));
+    }
+  }, [notify, refreshQueue]);
+
+  const reorderQueuedTrack = useCallback(async (id: number, toIndex: number) => {
+    try {
+      await moveQueueItem(id, toIndex);
+      await refreshQueue(true);
+    } catch (error) {
+      notify(String(error));
+    }
+  }, [notify, refreshQueue]);
+
+  const clearLocalQueue = useCallback(async () => {
+    try {
+      await clearQueue();
+      await refreshQueue(true);
+      notify("Queue cleared");
+    } catch (error) {
+      notify(String(error));
+    }
+  }, [notify, refreshQueue]);
 
   const restoredPlayer = useMemo<PlaybackState | null>(() => restoredPlayback ? {
     device: {
@@ -552,7 +639,42 @@ function App() {
 
   const displayProgress = usePlaybackClock(displayPlayer, currentTrack?.duration ?? 0);
   const currentArtistsKey = currentTrack?.artists.map((artist) => artist.name).join("\u0000") ?? "";
-  const lyricsVisible = showLyrics || showFullPlayer;
+  const lyricsVisible = sidePanel === "lyrics" || showFullPlayer;
+
+  useEffect(() => {
+    const nextEntry = queueData?.items[0];
+    const localDeviceActive = Boolean(
+      player?.device.id && player.device.id === nativePlayback?.deviceId
+    );
+    if (!nextEntry || !localDeviceActive || !player?.is_playing || !currentTrack?.duration) return;
+    const elapsedSinceSnapshot = player.timestamp ? Math.max(0, Date.now() - player.timestamp) : 0;
+    const estimatedProgress = (player.progress_ms ?? 0) + elapsedSinceSnapshot;
+    const remaining = currentTrack.duration - estimatedProgress;
+    if (remaining <= 0 || remaining > currentTrack.duration) return;
+
+    let active = true;
+    const timer = window.setTimeout(() => {
+      void playQueuedEntry(nextEntry.id)
+        .then(() => undefined)
+        .catch((error) => active && notify(`Could not advance the local queue: ${error}`));
+    }, Math.max(100, remaining + 80));
+
+    return () => {
+      active = false;
+      window.clearTimeout(timer);
+    };
+  }, [
+    player?.item,
+    player?.is_playing,
+    player?.progress_ms,
+    player?.timestamp,
+    player?.device.id,
+    nativePlayback?.deviceId,
+    currentTrack?.duration,
+    queueData,
+    playQueuedEntry,
+    notify,
+  ]);
 
   useEffect(() => {
     if (!lyricsVisible) return;
@@ -633,7 +755,7 @@ function App() {
   }, []);
 
   return (
-    <div className={`app ${showLyrics && user ? "lyrics-open" : ""}`}>
+    <div className={`app ${sidePanel && user ? "side-panel-open" : ""}`}>
       <Sidebar user={user} nativePlayback={nativePlayback} nav={nav} view={view} onNav={setView} onLogout={doLogout} playlistCount={shelves.playlists.length} themes={themes} themeId={themeId} onTheme={changeTheme} />
       <main className="content" onClick={() => showDevices && setShowDevices(false)}>
         {!user ? (
@@ -674,7 +796,7 @@ function App() {
           </>
         )}
       </main>
-      {user && showLyrics && (
+      {user && sidePanel === "lyrics" && (
         <LyricsPanel
           document={lyrics}
           status={lyricsStatus}
@@ -682,7 +804,24 @@ function App() {
           progress={displayProgress}
           onSeek={seekTo}
           onRetry={() => setLyricsRetry((value) => value + 1)}
-          onClose={() => setShowLyrics(false)}
+          onClose={() => setSidePanel(null)}
+        />
+      )}
+      {user && sidePanel === "queue" && (
+        <QueuePanel
+          data={queueData}
+          current={currentTrack}
+          status={queueStatus}
+          error={queueError}
+          onRefresh={() => void refreshQueue()}
+          onPlayNext={() => {
+            const next = queueData?.items[0];
+            if (next) void playQueuedEntry(next.id).catch((error) => notify(String(error)));
+          }}
+          onRemove={(id) => void removeQueuedTrack(id)}
+          onMove={(id, toIndex) => void reorderQueuedTrack(id, toIndex)}
+          onClear={() => void clearLocalQueue()}
+          onClose={() => setSidePanel(null)}
         />
       )}
       {user && (
@@ -699,8 +838,10 @@ function App() {
           onSeek={seekTo}
           onVolume={(v) => setVolume(v).catch(() => notify("failed"))}
           onDevices={openDevices}
-          onLyrics={() => setShowLyrics((visible) => !visible)}
-          lyricsOpen={showLyrics}
+          onLyrics={() => setSidePanel((panel) => panel === "lyrics" ? null : "lyrics")}
+          lyricsOpen={sidePanel === "lyrics"}
+          onQueue={() => setSidePanel((panel) => panel === "queue" ? null : "queue")}
+          queueOpen={sidePanel === "queue"}
           onFullscreen={() => currentTrack && setShowFullPlayer(true)}
         />
       )}
@@ -736,6 +877,9 @@ function App() {
           onPlay={(track) => {
             void startTracks([track.uri]);
           }}
+          onQueue={(track) => {
+            void queueTrack(track.uri);
+          }}
         />
       )}
       {toast && <div className="toast">{toast}</div>}
@@ -748,13 +892,14 @@ export function QuickSearch(props: {
   onClose: () => void;
   onFind: (query: string) => Promise<SearchResults>;
   onPlay: (track: Track) => void;
+  onQueue: (track: Track) => void;
 }) {
   const [query, setQuery] = useState("");
   const [tracks, setTracks] = useState<Track[]>([]);
   const [selected, setSelected] = useState(0);
   const [loading, setLoading] = useState(false);
   const inputRef = useRef<HTMLInputElement | null>(null);
-  const rowRefs = useRef<(HTMLButtonElement | null)[]>([]);
+  const rowRefs = useRef<(HTMLDivElement | null)[]>([]);
   const requestSequence = useRef(0);
 
   useEffect(() => {
@@ -811,6 +956,11 @@ export function QuickSearch(props: {
     }
   };
 
+  const queueSelected = () => {
+    const track = tracks[selected];
+    if (track) props.onQueue(track);
+  };
+
   return (
     <div className="quick-search-backdrop" onMouseDown={props.onClose}>
       <section className="quick-search" role="dialog" aria-modal="true" aria-label="Quick search" onMouseDown={(event) => event.stopPropagation()}>
@@ -833,7 +983,8 @@ export function QuickSearch(props: {
                 setSelected((index) => Math.max(0, index - 1));
               } else if (event.key === "Enter") {
                 event.preventDefault();
-                playSelected();
+                if (event.shiftKey) queueSelected();
+                else playSelected();
               }
             }}
             placeholder="Search for a song"
@@ -853,7 +1004,7 @@ export function QuickSearch(props: {
           {tracks.map((track, index) => {
             const artwork = imageOf(track.album, 60);
             return (
-              <button
+              <div
                 ref={(element) => { rowRefs.current[index] = element; }}
                 id={`quick-track-${track.id}`}
                 className={`quick-search-result ${index === selected ? "selected" : ""}`}
@@ -865,6 +1016,7 @@ export function QuickSearch(props: {
                   props.onPlay(track);
                   props.onClose();
                 }}
+                tabIndex={-1}
               >
                 {artwork ? <img src={artwork} alt="" /> : <span className="quick-search-art-placeholder">♪</span>}
                 <span className="quick-search-result-main">
@@ -873,7 +1025,18 @@ export function QuickSearch(props: {
                 </span>
                 <span className="quick-search-album">{track.album?.name}</span>
                 <span className="quick-search-duration">{msToTime(track.duration_ms)}</span>
-              </button>
+                <button
+                  className="quick-search-queue"
+                  title={`Add ${track.name} to queue`}
+                  aria-label={`Add ${track.name} to queue`}
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    props.onQueue(track);
+                  }}
+                >
+                  <PlayerIcon name="queue" size={17} />
+                </button>
+              </div>
             );
           })}
         </div>
@@ -881,6 +1044,7 @@ export function QuickSearch(props: {
           <footer className="quick-search-footer">
             <span><kbd>↑</kbd><kbd>↓</kbd> Navigate</span>
             <span><kbd>↵</kbd> Play</span>
+            <span><kbd>⇧</kbd><kbd>↵</kbd> Add to Queue</span>
           </footer>
         )}
       </section>
@@ -1367,6 +1531,7 @@ function TrackListView(props: {
           </button>
         </div>
       </header>
+      {data.notice && <p className="entity-notice">{data.notice}</p>}
       <div className="rows">
         {data.tracks.map((t, i) => (
           <TrackRow key={trackKey(t)} t={t} index={i} onPlay={() => props.onPlayAll([t.uri])} onQueue={() => props.onQueue(t.uri)} />
@@ -1415,8 +1580,12 @@ type PlayerIconName =
   | "repeat"
   | "repeat-one"
   | "lyrics"
+  | "queue"
   | "fullscreen"
   | "devices"
+  | "up"
+  | "down"
+  | "trash"
   | "close";
 
 function PlayerIcon(props: { name: PlayerIconName; size?: number }) {
@@ -1438,10 +1607,18 @@ function PlayerIcon(props: { name: PlayerIconName; size?: number }) {
         return <><path d="M17 5H8a4 4 0 0 0-4 4v1" /><path d="m14 2 3 3-3 3" /><path d="M7 19h9a4 4 0 0 0 4-4v-1" /><path d="m10 22-3-3 3-3" />{props.name === "repeat-one" && <path d="M11 9h1v6" />}</>;
       case "lyrics":
         return <><path d="M4 5h16v12H9l-5 3Z" /><path d="M8 9h3v3H8zM14 9h3v3h-3z" /></>;
+      case "queue":
+        return <><path d="M4 6h12M4 11h12M4 16h8" /><path d="m16 14 4 2.5-4 2.5Z" /></>;
       case "fullscreen":
         return <><path d="M8 4H4v4M16 4h4v4M20 16v4h-4M8 20H4v-4" /></>;
       case "devices":
         return <><path d="M5 18h14" /><path d="m9 18 3-5 3 5" /><path d="M8.5 10.5a5 5 0 0 1 7 0" /><path d="M6 8a8.5 8.5 0 0 1 12 0" /></>;
+      case "up":
+        return <path d="m7 14 5-5 5 5" />;
+      case "down":
+        return <path d="m7 10 5 5 5-5" />;
+      case "trash":
+        return <><path d="M5 7h14M9 7V4h6v3M8 10v8M12 10v8M16 10v8M7 7l1 14h8l1-14" /></>;
       case "close":
         return <><path d="m6 6 12 12M18 6 6 18" /></>;
     }
@@ -1468,6 +1645,8 @@ function NowPlayingBar(props: {
   onDevices: () => void;
   onLyrics: () => void;
   lyricsOpen: boolean;
+  onQueue: () => void;
+  queueOpen: boolean;
   onFullscreen: () => void;
 }) {
   const { track, player } = props;
@@ -1487,6 +1666,9 @@ function NowPlayingBar(props: {
         <ProgressSlider progress={props.progress} duration={track?.duration ?? 0} onSeek={props.onSeek} />
       </div>
       <div className="np-right">
+        <button className="ctrl" onClick={props.onQueue} title="Queue" aria-label="Queue" data-active={props.queueOpen} disabled={!track}>
+          <PlayerIcon name="queue" />
+        </button>
         <button className="ctrl" onClick={props.onLyrics} title="Lyrics" aria-label="Lyrics" data-active={props.lyricsOpen} disabled={!track}>
           <PlayerIcon name="lyrics" />
         </button>
@@ -1549,6 +1731,116 @@ function ProgressSlider(props: { progress: number; duration: number; onSeek: (ms
         onChange={(event) => props.onSeek(Number(event.currentTarget.value))}
       />
       <span className="time">{msToTime(props.duration)}</span>
+    </div>
+  );
+}
+
+export function QueuePanel(props: {
+  data: PlaybackQueue | null;
+  current: CurrentTrack | null;
+  status: QueueStatus;
+  error: string | null;
+  onRefresh: () => void;
+  onPlayNext: () => void;
+  onRemove: (id: number) => void;
+  onMove: (id: number, toIndex: number) => void;
+  onClear: () => void;
+  onClose: () => void;
+}) {
+  const upcoming = props.data?.items ?? [];
+  return (
+    <aside className="queue-panel queue-sidebar">
+      <header className="queue-header">
+        <div>
+          <h2>Queue</h2>
+          <span>{upcoming.length} upcoming</span>
+        </div>
+        <div className="queue-header-actions">
+          {upcoming.length > 0 && <button className="queue-refresh queue-play-next" onClick={props.onPlayNext}>Play next</button>}
+          {upcoming.length > 0 && <button className="queue-refresh" onClick={props.onClear}>Clear</button>}
+          <button className="queue-refresh" onClick={props.onRefresh} disabled={props.status === "loading"}>Refresh</button>
+          <button className="ctrl" onClick={props.onClose} title="Close queue" aria-label="Close queue"><PlayerIcon name="close" /></button>
+        </div>
+      </header>
+      <div className="queue-scroll">
+        {props.status === "loading" && !props.data && <div className="queue-message"><span className="lyrics-loader" />Loading queue…</div>}
+        {props.status === "error" && !props.data && (
+          <div className="queue-message">
+            <strong>Queue could not be loaded.</strong>
+            <span>{props.error}</span>
+            <button className="ghost-btn" onClick={props.onRefresh}>Try again</button>
+          </div>
+        )}
+        {props.current && (
+          <section className="queue-section">
+            <h3>Now Playing</h3>
+            <QueueTrackRow track={props.current} current />
+          </section>
+        )}
+        <section className="queue-section">
+          <div className="queue-section-title">
+            <h3>Next Up</h3>
+            {props.status === "loading" && props.data && <span>Updating…</span>}
+          </div>
+          {upcoming.length ? upcoming.map((entry, index) => (
+            <QueueTrackRow
+              key={entry.id}
+              track={entry.track}
+              index={index + 1}
+              draggable
+              dragId={entry.id}
+              onDropQueue={(draggedId) => props.onMove(draggedId, index)}
+              onMoveUp={index > 0 ? () => props.onMove(entry.id, index - 1) : undefined}
+              onMoveDown={index + 1 < upcoming.length ? () => props.onMove(entry.id, index + 1) : undefined}
+              onRemove={() => props.onRemove(entry.id)}
+            />
+          )) : props.status !== "loading" && <p className="queue-empty">Nothing queued yet. Add songs with the + button.</p>}
+        </section>
+      </div>
+      <p className="queue-footnote">Stored locally in Spotagooey. Drag songs to reorder them; this queue does not sync to other Spotify devices.</p>
+    </aside>
+  );
+}
+
+function QueueTrackRow(props: {
+  track: Track | CurrentTrack;
+  index?: number;
+  current?: boolean;
+  draggable?: boolean;
+  dragId?: number;
+  onDropQueue?: (draggedId: number) => void;
+  onMoveUp?: () => void;
+  onMoveDown?: () => void;
+  onRemove?: () => void;
+}) {
+  const artwork = "image" in props.track ? props.track.image : imageOf(props.track.album, 60);
+  const duration = "duration" in props.track ? props.track.duration : props.track.duration_ms;
+  return (
+    <div
+      className={`queue-track ${props.current ? "current" : ""}`}
+      draggable={props.draggable}
+      onDragStart={(event) => event.dataTransfer.setData("text/spotagooey-queue", String(props.dragId))}
+      onDragOver={(event) => props.onDropQueue && event.preventDefault()}
+      onDrop={(event) => {
+        event.preventDefault();
+        const draggedId = Number(event.dataTransfer.getData("text/spotagooey-queue"));
+        if (Number.isSafeInteger(draggedId)) props.onDropQueue?.(draggedId);
+      }}
+    >
+      <span className="queue-position">{props.current ? <PlayerIcon name="play" size={13} /> : props.index}</span>
+      {artwork ? <img src={artwork} alt="" /> : <span className="queue-art-placeholder">♪</span>}
+      <span className="queue-track-main">
+        <strong>{props.track.name}</strong>
+        <small>{props.track.artists.map((artist) => artist.name).join(", ")}</small>
+      </span>
+      <span className="queue-duration">{msToTime(duration)}</span>
+      {props.onRemove && (
+        <span className="queue-row-actions">
+          <button onClick={props.onMoveUp} disabled={!props.onMoveUp} aria-label={`Move ${props.track.name} up`}><PlayerIcon name="up" size={14} /></button>
+          <button onClick={props.onMoveDown} disabled={!props.onMoveDown} aria-label={`Move ${props.track.name} down`}><PlayerIcon name="down" size={14} /></button>
+          <button onClick={props.onRemove} aria-label={`Remove ${props.track.name} from queue`}><PlayerIcon name="trash" size={14} /></button>
+        </span>
+      )}
     </div>
   );
 }

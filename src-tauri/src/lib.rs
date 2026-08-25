@@ -2,6 +2,7 @@
 
 mod auth;
 mod config;
+mod local_queue;
 mod lyrics;
 mod native_playback;
 
@@ -14,15 +15,15 @@ use spotify_web_api::{
     api::{
         albums::{GetAlbum, GetUserSavedAlbums},
         artists::{GetArtist, GetArtistTopTracks},
-        ignore, player::{AddItemToPlaybackQueue, GetAvailableDevices, GetPlaybackState},
-        playlists::{GetCurrentUserPlaylists, GetPlaylist, GetPlaylistItems},
+        ignore, player::{GetAvailableDevices, GetPlaybackState},
+        playlists::{GetCurrentUserPlaylists, GetPlaylist},
         raw, Endpoint, QueryParams,
         tracks::{GetTrack, GetUserSavedTracks},
         users::{GetCurrentUserProfile, GetUserTopItems},
         AsyncQuery as _,
     },
     model::{
-        id::{ContextType, TrackId},
+        id::{ContextType, PlaylistId, TrackId},
         player::RepeatState,
         SearchType, TimeRange, TopItemType,
     },
@@ -35,6 +36,30 @@ struct SearchPage {
     search_types: Vec<SearchType>,
     limit: u8,
     offset: u32,
+}
+
+#[derive(Debug, Clone)]
+struct GetPlaylistItemsPage {
+    id: PlaylistId,
+    limit: u8,
+    offset: u32,
+}
+
+impl Endpoint for GetPlaylistItemsPage {
+    fn method(&self) -> Method {
+        Method::GET
+    }
+
+    fn endpoint(&self) -> Cow<'static, str> {
+        format!("playlists/{}/items", self.id.id()).into()
+    }
+
+    fn parameters(&self) -> QueryParams<'_> {
+        let mut params = QueryParams::default();
+        params.push("limit", &self.limit);
+        params.push("offset", &self.offset);
+        params
+    }
 }
 
 impl Endpoint for SearchPage {
@@ -73,6 +98,8 @@ struct SpotifyState {
     config: tokio::sync::Mutex<config::Config>,
     native: tokio::sync::Mutex<NativePlaybackState>,
     selected_device: tokio::sync::Mutex<Option<String>>,
+    local_queue: tokio::sync::Mutex<local_queue::LocalQueue>,
+    queue_advance: tokio::sync::Mutex<()>,
     lyrics: lyrics::LyricsService,
 }
 
@@ -538,10 +565,46 @@ async fn playlist(state: tauri::State<'_, SpotifyState>, id: String) -> Result<V
     query_value!(client.as_ref(), GetPlaylist::from(id), "failed to load playlist")
 }
 
+fn normalize_playlist_items(value: &mut Value) {
+    let Some(items) = value.get_mut("items").and_then(Value::as_array_mut) else {
+        return;
+    };
+    for entry in items {
+        let Some(object) = entry.as_object_mut() else {
+            continue;
+        };
+        if !object.contains_key("track") {
+            if let Some(item) = object.get("item").cloned() {
+                object.insert("track".to_string(), item);
+            }
+        }
+    }
+}
+
 #[tauri::command]
 async fn playlist_items(state: tauri::State<'_, SpotifyState>, id: String) -> Result<Value, String> {
     let client = must_client(&state).await?;
-    query_value!(client.as_ref(), GetPlaylistItems::from(id), "failed to load playlist items")
+    let id = PlaylistId::from_id(id).map_err(|error| format!("invalid playlist ID: {error}"))?;
+    let bytes = raw(GetPlaylistItemsPage {
+        id,
+        limit: 50,
+        offset: 0,
+    })
+    .query_async(client.as_ref())
+    .await
+    .map_err(|error| {
+        let message = error.to_string();
+        if message.contains("403") || message.contains("Forbidden") {
+            "Spotify only allows Spotagooey to open playlists you own or collaborate on. This playlist can still be opened in Spotify."
+                .to_string()
+        } else {
+            format!("failed to load playlist items: {message}")
+        }
+    })?;
+    let mut value: Value = serde_json::from_slice(&bytes)
+        .map_err(|error| format!("failed to decode Spotify playlist items: {error}"))?;
+    normalize_playlist_items(&mut value);
+    Ok(value)
 }
 
 #[tauri::command]
@@ -611,6 +674,46 @@ async fn devices(state: tauri::State<'_, SpotifyState>) -> Result<Value, String>
 }
 
 #[tauri::command]
+async fn playback_queue(
+    state: tauri::State<'_, SpotifyState>,
+) -> Result<local_queue::QueueSnapshot, String> {
+    Ok(state.local_queue.lock().await.snapshot())
+}
+
+async fn resolve_playback_device(
+    state: &tauri::State<'_, SpotifyState>,
+    client: &AsyncSpotifyPKCE,
+) -> Result<String, String> {
+    if let Some(device_id) = state.selected_device.lock().await.clone() {
+        return Ok(device_id);
+    }
+
+    let available = query_value!(
+        client,
+        GetAvailableDevices,
+        "failed to find a Spotify playback device"
+    )?;
+    let devices = available
+        .get("devices")
+        .and_then(Value::as_array)
+        .ok_or_else(|| "Spotify returned an invalid device list".to_string())?;
+    let device_id = devices
+        .iter()
+        .find(|device| device.get("is_active").and_then(Value::as_bool) == Some(true))
+        .or_else(|| devices.first())
+        .and_then(|device| device.get("id"))
+        .and_then(Value::as_str)
+        .map(str::to_string)
+        .ok_or_else(|| {
+            "No Spotify playback device is available. Wait for local audio to become ready, or open Spotify on another device."
+                .to_string()
+        })?;
+
+    *state.selected_device.lock().await = Some(device_id.clone());
+    Ok(device_id)
+}
+
+#[tauri::command]
 async fn play(
     state: tauri::State<'_, SpotifyState>,
     context_uri: Option<String>,
@@ -618,32 +721,7 @@ async fn play(
     position_ms: Option<u32>,
 ) -> Result<(), String> {
     let client = must_client(&state).await?;
-    let selected_device = state.selected_device.lock().await.clone();
-    let device_id = match selected_device {
-        Some(device_id) => device_id,
-        None => {
-            let available = query_value!(
-                client.as_ref(),
-                GetAvailableDevices,
-                "failed to find a Spotify playback device"
-            )?;
-            let devices = available
-                .get("devices")
-                .and_then(Value::as_array)
-                .ok_or_else(|| "Spotify returned an invalid device list".to_string())?;
-            devices
-                .iter()
-                .find(|device| device.get("is_active").and_then(Value::as_bool) == Some(true))
-                .or_else(|| devices.first())
-                .and_then(|device| device.get("id"))
-                .and_then(Value::as_str)
-                .map(str::to_string)
-                .ok_or_else(|| {
-                    "No Spotify playback device is available. Wait for local audio to become ready, or open Spotify on another device."
-                        .to_string()
-                })?
-        }
-    };
+    let device_id = resolve_playback_device(&state, client.as_ref()).await?;
 
     let mut start = spotify_web_api::api::player::StartPlayback::from(device_id);
     if let Some(uri) = context_uri {
@@ -771,12 +849,81 @@ async fn add_to_queue(
     uri: String,
 ) -> Result<(), String> {
     let client = must_client(&state).await?;
-    let track_id = TrackId::from_uri(&uri).map_err(|e| e.to_string())?;
-    let item = spotify_web_api::model::player::PlaylistItem::Track(track_id);
-    ignore(AddItemToPlaybackQueue::from(item))
+    let track_id = TrackId::from_uri(&uri).map_err(|error| error.to_string())?;
+    let track = query_value!(
+        client.as_ref(),
+        GetTrack::from(track_id.id()),
+        "failed to load the queued song"
+    )?;
+    state.local_queue.lock().await.push(track)?;
+    Ok(())
+}
+
+#[tauri::command]
+async fn remove_from_queue(
+    state: tauri::State<'_, SpotifyState>,
+    id: u64,
+) -> Result<(), String> {
+    state.local_queue.lock().await.remove(id)
+}
+
+#[tauri::command]
+async fn move_queue_item(
+    state: tauri::State<'_, SpotifyState>,
+    id: u64,
+    to_index: usize,
+) -> Result<(), String> {
+    state.local_queue.lock().await.move_to(id, to_index)
+}
+
+#[tauri::command]
+async fn clear_queue(state: tauri::State<'_, SpotifyState>) -> Result<(), String> {
+    state.local_queue.lock().await.clear()
+}
+
+#[tauri::command]
+async fn play_next_from_queue(
+    state: tauri::State<'_, SpotifyState>,
+    expected_id: u64,
+) -> Result<Option<Value>, String> {
+    let _advance = state.queue_advance.lock().await;
+    let Some(entry) = state.local_queue.lock().await.first() else {
+        return Ok(None);
+    };
+    if entry.id != expected_id {
+        return Ok(None);
+    }
+    let uri = entry
+        .track
+        .get("uri")
+        .and_then(Value::as_str)
+        .ok_or_else(|| "Queued song has no Spotify URI".to_string())?;
+    let track_id = TrackId::from_uri(uri).map_err(|error| error.to_string())?;
+    let client = must_client(&state).await?;
+    let device_id = state
+        .native
+        .lock()
+        .await
+        .player
+        .as_ref()
+        .and_then(|player| player.info().device_id)
+        .ok_or_else(|| {
+            "Spotagooey local audio is not ready. Start local audio before playing its queue."
+                .to_string()
+        })?;
+    let start = spotify_web_api::api::player::StartPlayback::from(device_id.clone()).uris(vec![track_id]);
+    ignore(start)
         .query_async(client.as_ref())
         .await
-        .map_err(api_err!("failed to add to queue"))
+        .map_err(api_err!("failed to play the next queued song"))?;
+    *state.selected_device.lock().await = Some(device_id);
+
+    state
+        .local_queue
+        .lock()
+        .await
+        .remove_if_first(entry.id)?;
+    Ok(Some(entry.track))
 }
 
 #[tauri::command]
@@ -799,6 +946,8 @@ pub fn run() {
             config: tokio::sync::Mutex::new(config::load()),
             native: tokio::sync::Mutex::new(NativePlaybackState::default()),
             selected_device: tokio::sync::Mutex::new(None),
+            local_queue: tokio::sync::Mutex::new(local_queue::LocalQueue::load()),
+            queue_advance: tokio::sync::Mutex::new(()),
             lyrics: lyrics::LyricsService::new().expect("failed to initialize lyrics client"),
         })
         .plugin(tauri_plugin_opener::init())
@@ -823,6 +972,7 @@ pub fn run() {
             track,
             top_items,
             playback_state,
+            playback_queue,
             devices,
             play,
             pause,
@@ -835,6 +985,10 @@ pub fn run() {
             set_volume,
             transfer_playback,
             add_to_queue,
+            remove_from_queue,
+            move_queue_item,
+            clear_queue,
+            play_next_from_queue,
             get_lyrics,
         ])
         .run(tauri::generate_context!())
@@ -874,4 +1028,30 @@ mod search_tests {
         assert_eq!(normalize_search_name("Clara Joy"), normalize_search_name("clara-joy!"));
         assert_eq!(artist_field_query("Clara \"Joy\""), "artist:\"Clara \\\"Joy\\\"\"");
     }
+
+    #[test]
+    fn playlist_items_uses_the_2026_items_endpoint() {
+        let endpoint = GetPlaylistItemsPage {
+            id: PlaylistId::from_id("3cEYpjA9oz9GiPac4AsH4n").unwrap(),
+            limit: 50,
+            offset: 0,
+        };
+
+        assert_eq!(endpoint.endpoint(), "playlists/3cEYpjA9oz9GiPac4AsH4n/items");
+    }
+
+    #[test]
+    fn playlist_item_field_is_normalized_for_the_frontend() {
+        let mut response = json!({
+            "items": [{
+                "added_at": null,
+                "item": { "id": "track-1", "name": "A song" }
+            }]
+        });
+
+        normalize_playlist_items(&mut response);
+
+        assert_eq!(response["items"][0]["track"]["id"], "track-1");
+    }
+
 }

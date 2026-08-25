@@ -55,8 +55,9 @@ describe("QuickSearch", () => {
       },
     });
     const onPlay = vi.fn();
+    const onQueue = vi.fn();
     const onClose = vi.fn();
-    render(<QuickSearch open onClose={onClose} onFind={onFind} onPlay={onPlay} />);
+    render(<QuickSearch open onClose={onClose} onFind={onFind} onPlay={onPlay} onQueue={onQueue} />);
 
     const input = screen.getByRole("combobox");
     fireEvent.change(input, { target: { value: "clara joy" } });
@@ -70,5 +71,12 @@ describe("QuickSearch", () => {
 
     expect(onPlay).toHaveBeenCalledWith(second);
     expect(onClose).toHaveBeenCalledOnce();
+
+    fireEvent.keyDown(input, { key: "Enter", shiftKey: true });
+    expect(onQueue).toHaveBeenCalledWith(second);
+    expect(onClose).toHaveBeenCalledOnce();
+
+    fireEvent.click(screen.getByRole("button", { name: "Add Graduation to queue" }));
+    expect(onQueue).toHaveBeenLastCalledWith(first);
   });
 });

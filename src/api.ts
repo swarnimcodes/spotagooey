@@ -126,6 +126,15 @@ export interface PlaybackState {
   actions: Record<string, boolean>;
 }
 
+export interface QueueEntry {
+  id: number;
+  track: Track;
+}
+
+export interface PlaybackQueue {
+  items: QueueEntry[];
+}
+
 export interface LyricsLine {
   startMs: number | null;
   text: string;
@@ -215,6 +224,10 @@ export async function playbackState(): Promise<PlaybackState | null> {
   return invoke("playback_state");
 }
 
+export async function playbackQueue(): Promise<PlaybackQueue | null> {
+  return invoke("playback_queue");
+}
+
 export async function devices(): Promise<{ devices: Device[] }> {
   return invoke("devices");
 }
@@ -265,6 +278,22 @@ export async function transferPlayback(deviceId: string): Promise<void> {
 
 export async function addToQueue(uri: string): Promise<void> {
   return invoke("add_to_queue", { uri });
+}
+
+export async function removeFromQueue(id: number): Promise<void> {
+  return invoke("remove_from_queue", { id });
+}
+
+export async function moveQueueItem(id: number, toIndex: number): Promise<void> {
+  return invoke("move_queue_item", { id, toIndex });
+}
+
+export async function clearQueue(): Promise<void> {
+  return invoke("clear_queue");
+}
+
+export async function playNextFromQueue(expectedId: number): Promise<Track | null> {
+  return invoke("play_next_from_queue", { expectedId });
 }
 
 export async function getLyrics(request: LyricsRequest): Promise<LyricsDocument | null> {
